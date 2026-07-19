@@ -4,8 +4,8 @@
     {
       "name": "edf-server",
       "runtimeExecutable": "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe",
-      "runtimeArgs": ["-cp", "build\\classes\\java\\main;build\\resources\\main", "eeg.server.EdfServer"],
-      "port": 8080
+      "runtimeArgs": ["-cp", "build\\classes\\java\\main;build\\resources\\main", "eeg.server.EdfServer", "data/SC4001E0-PSG.edf", "8090"],
+      "port": 8090
     }
   ]
 }

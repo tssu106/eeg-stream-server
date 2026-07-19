@@ -11,19 +11,24 @@
   button { border: 1px solid #ccc; background: #fff; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   button:hover { background: #f5f5f5; }
   button.active { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
+  button .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
   .row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
   .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
   input[type=range] { flex: 1; min-width: 200px; }
   .readout { font-size: 13px; font-weight: 500; min-width: 220px; text-align: right; color: #444; }
-  .chartLabel { font-size: 12px; color: #666; margin-bottom: 2px; }
-  .chartWrap { position: relative; height: 160px; margin-bottom: 14px; }
+  .chartRow { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .chartRowLabel { width: 130px; flex: 0 0 130px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; text-align: right; }
+  .chartRowLabel .name { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; }
+  .chartRowLabel .unit { font-size: 11px; color: #888; }
+  .chartWrap { position: relative; height: 88px; flex: 1; min-width: 0; }
   .hint { font-size: 12px; color: #888; margin-top: 8px; }
+  .empty { font-size: 13px; color: #888; padding: 24px 0; }
 </style>
 </head>
 <body>
   <h1>EDF Channel Viewer</h1>
   <div class="sub" id="fileInfo">불러오는 중...</div>
-  <div class="row tabs" id="categoryTabs"></div>
+  <div class="row tabs" id="channelToggles"></div>
   <div class="row">
     <div class="tabs" id="windowTabs"></div>
     <input type="range" id="startRange" min="0" max="0" step="1" value="0" />
@@ -39,12 +44,10 @@ const WINDOWS = [
   { label: '10분', sec: 600 }
 ];
 const FOREST = ['#2a78d6', '#008300', '#e87ba4', '#eda100', '#1baf7a', '#eb6834', '#4a3aa7'];
-const CATEGORY_ORDER = ['EEG', 'EOG', 'EMG', 'Resp', 'Temp', 'Event', 'Other'];
 const MAX_POINTS = 2000;
 
 let header = null;
-let categories = [];
-let currentCategory = null;
+let activeChannels = new Set();
 let currentWindow = WINDOWS[0].sec;
 let currentStart = 0;
 let charts = [];
@@ -68,17 +71,28 @@ function tabButton(text, active, onClick) {
   return btn;
 }
 
-function renderTabs() {
-  const catEl = document.getElementById('categoryTabs');
-  catEl.innerHTML = '';
-  categories.forEach(cat => {
-    catEl.appendChild(tabButton(cat.label, cat.key === currentCategory.key, () => {
-      currentCategory = cat;
-      renderTabs();
+function renderChannelToggles() {
+  const el = document.getElementById('channelToggles');
+  el.innerHTML = '';
+  header.signals.forEach(s => {
+    const btn = document.createElement('button');
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = FOREST[s.index % FOREST.length];
+    btn.appendChild(dot);
+    btn.appendChild(document.createTextNode(s.label));
+    if (activeChannels.has(s.index)) btn.classList.add('active');
+    btn.addEventListener('click', () => {
+      if (activeChannels.has(s.index)) activeChannels.delete(s.index);
+      else activeChannels.add(s.index);
+      renderChannelToggles();
       renderCharts();
-    }));
+    });
+    el.appendChild(btn);
   });
+}
 
+function renderWindowTabs() {
   const winEl = document.getElementById('windowTabs');
   winEl.innerHTML = '';
   WINDOWS.forEach(w => {
@@ -86,7 +100,7 @@ function renderTabs() {
       currentWindow = w.sec;
       currentStart = Math.min(currentStart, maxStart());
       syncSlider();
-      renderTabs();
+      renderWindowTabs();
       renderCharts();
     }));
   });
@@ -120,11 +134,19 @@ let renderGeneration = 0;
 async function renderCharts() {
   const start = currentStart;
   const windowSec = currentWindow;
-  const category = currentCategory;
+  const channels = Array.from(activeChannels).sort((a, b) => a - b);
   const myGeneration = ++renderGeneration;
+  const chartsEl = document.getElementById('charts');
+
+  if (channels.length === 0) {
+    charts.forEach(c => c.destroy());
+    charts = [];
+    chartsEl.innerHTML = '<div class="empty">표시할 채널을 위 목록에서 선택하세요</div>';
+    return;
+  }
 
   const results = await Promise.all(
-    category.channels.map(chIdx => fetchSamples(chIdx, start, windowSec))
+    channels.map(chIdx => fetchSamples(chIdx, start, windowSec))
   );
 
   if (myGeneration !== renderGeneration) {
@@ -133,18 +155,34 @@ async function renderCharts() {
 
   charts.forEach(c => c.destroy());
   charts = [];
-  const chartsEl = document.getElementById('charts');
   chartsEl.innerHTML = '';
 
-  category.channels.forEach((chIdx, i) => {
+  channels.forEach((chIdx, i) => {
     const signal = header.signals[chIdx];
     const data = results[i];
-    const isLast = i === category.channels.length - 1;
+    const isLast = i === channels.length - 1;
+    const color = FOREST[chIdx % FOREST.length];
+
+    const rowEl = document.createElement('div');
+    rowEl.className = 'chartRow';
 
     const label = document.createElement('div');
-    label.className = 'chartLabel';
-    label.textContent = signal.label + (signal.unit ? ' (' + signal.unit + ')' : '');
-    chartsEl.appendChild(label);
+    label.className = 'chartRowLabel';
+    const nameLine = document.createElement('div');
+    nameLine.className = 'name';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = color;
+    nameLine.appendChild(dot);
+    nameLine.appendChild(document.createTextNode(signal.label));
+    label.appendChild(nameLine);
+    if (signal.unit) {
+      const unitLine = document.createElement('div');
+      unitLine.className = 'unit';
+      unitLine.textContent = signal.unit;
+      label.appendChild(unitLine);
+    }
+    rowEl.appendChild(label);
 
     const wrap = document.createElement('div');
     wrap.className = 'chartWrap';
@@ -152,10 +190,10 @@ async function renderCharts() {
     canvas.setAttribute('role', 'img');
     canvas.setAttribute('aria-label', signal.label + ' 파형, ' + formatClock(start) + '부터 ' + formatClock(start + windowSec) + '까지');
     wrap.appendChild(canvas);
-    chartsEl.appendChild(wrap);
+    rowEl.appendChild(wrap);
+    chartsEl.appendChild(rowEl);
 
     const points = decimate(data.sfreq, data.start, data.values);
-    const color = FOREST[chIdx % FOREST.length];
 
     const chart = new Chart(canvas, {
       type: 'line',
@@ -209,15 +247,11 @@ async function init() {
   document.getElementById('fileInfo').textContent =
     header.signals.length + '개 채널, 총 길이 ' + formatClock(header.totalDurationSec) + ' (' + header.numRecords + '개 레코드 × ' + header.recordDuration + '초)';
 
-  const groups = {};
-  header.signals.forEach(s => {
-    (groups[s.category] ||= []).push(s.index);
-  });
-  categories = CATEGORY_ORDER.filter(k => groups[k]).map(k => ({ key: k, label: k, channels: groups[k] }));
-  currentCategory = categories[0];
+  header.signals.forEach(s => activeChannels.add(s.index));
 
   syncSlider();
-  renderTabs();
+  renderChannelToggles();
+  renderWindowTabs();
   await renderCharts();
 }
 

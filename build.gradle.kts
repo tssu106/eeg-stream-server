@@ -17,7 +17,7 @@ java {
 }
 
 application {
-    mainClass = "eeg.Main"
+    mainClass = "eeg.server.EdfServer"
 }
 
 tasks.test { useJUnitPlatform() }

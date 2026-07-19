@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "edf-server",
+      "runtimeExecutable": "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe",
+      "runtimeArgs": ["-cp", "build\\classes\\java\\main;build\\resources\\main", "eeg.server.EdfServer"],
+      "port": 8080
+    }
+  ]
+}

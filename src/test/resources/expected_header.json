@@ -1,0 +1,86 @@
+{
+  "file": "SC4001E0-PSG.edf",
+  "numRecords": 2650,
+  "recordDuration": 30.0,
+  "numSignals": 7,
+  "headerBytes": 2048,
+  "signals": [
+    {
+      "index": 0,
+      "label": "EEG Fpz-Cz",
+      "dimension": "uV",
+      "physMin": -192.0,
+      "physMax": 192.0,
+      "digMin": -2048,
+      "digMax": 2047,
+      "samplesPerRecord": 3000,
+      "sfreq": 100.0
+    },
+    {
+      "index": 1,
+      "label": "EEG Pz-Oz",
+      "dimension": "uV",
+      "physMin": -197.0,
+      "physMax": 196.0,
+      "digMin": -2048,
+      "digMax": 2047,
+      "samplesPerRecord": 3000,
+      "sfreq": 100.0
+    },
+    {
+      "index": 2,
+      "label": "EOG horizontal",
+      "dimension": "uV",
+      "physMin": -1009.0,
+      "physMax": 1009.0,
+      "digMin": -2048,
+      "digMax": 2047,
+      "samplesPerRecord": 3000,
+      "sfreq": 100.0
+    },
+    {
+      "index": 3,
+      "label": "Resp oro-nasal",
+      "dimension": "",
+      "physMin": -2048.0,
+      "physMax": 2047.0,
+      "digMin": -2048,
+      "digMax": 2047,
+      "samplesPerRecord": 30,
+      "sfreq": 1.0
+    },
+    {
+      "index": 4,
+      "label": "EMG submental",
+      "dimension": "uV",
+      "physMin": -5.0,
+      "physMax": 5.0,
+      "digMin": -2500,
+      "digMax": 2500,
+      "samplesPerRecord": 30,
+      "sfreq": 1.0
+    },
+    {
+      "index": 5,
+      "label": "Temp rectal",
+      "dimension": "DegC",
+      "physMin": 34.0,
+      "physMax": 40.0,
+      "digMin": -2849,
+      "digMax": 2731,
+      "samplesPerRecord": 30,
+      "sfreq": 1.0
+    },
+    {
+      "index": 6,
+      "label": "Event marker",
+      "dimension": "",
+      "physMin": -2047.0,
+      "physMax": 2048.0,
+      "digMin": -2047,
+      "digMax": 2048,
+      "samplesPerRecord": 30,
+      "sfreq": 1.0
+    }
+  ]
+}

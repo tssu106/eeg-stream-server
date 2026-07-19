@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
 
 public class EdfServer {
 
@@ -28,8 +29,9 @@ public class EdfServer {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/header", new HeaderHandler(reader.header()));
         server.createContext("/api/samples", new SamplesHandler(reader));
+        server.createContext("/api/stream", new StreamHandler(reader));
         server.createContext("/", new StaticHandler());
-        server.setExecutor(null);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
 
         System.out.println("EDF server listening on http://localhost:" + port + " (" + edfPath + ")");
@@ -93,6 +95,8 @@ public class EdfServer {
                 json.append("\"label\":").append(Json.quote(s.label())).append(",");
                 json.append("\"unit\":").append(Json.quote(s.dimension())).append(",");
                 json.append("\"sfreq\":").append(Json.number(s.sfreq())).append(",");
+                json.append("\"physMin\":").append(Json.number(s.physMin())).append(",");
+                json.append("\"physMax\":").append(Json.number(s.physMax())).append(",");
                 json.append("\"category\":").append(Json.quote(categoryOf(s.label())));
                 json.append("}");
             }
@@ -146,6 +150,105 @@ public class EdfServer {
             json.append("}");
 
             sendJson(exchange, 200, json.toString());
+        }
+    }
+
+    private static class StreamHandler implements HttpHandler {
+        private static final int TICK_MS = 200;
+
+        private final EdfReader reader;
+
+        StreamHandler(EdfReader reader) {
+            this.reader = reader;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            Map<String, String> params = parseQuery(exchange.getRequestURI().getRawQuery());
+            EdfHeader header = reader.header();
+            double totalDurationSec = header.numRecords() * header.recordDuration();
+
+            int[] channels;
+            double start;
+            double speed;
+            try {
+                channels = java.util.Arrays.stream(params.getOrDefault("channels", "").split(","))
+                        .filter(s -> !s.isBlank())
+                        .mapToInt(Integer::parseInt)
+                        .toArray();
+                start = Double.parseDouble(params.getOrDefault("start", "0"));
+                speed = Double.parseDouble(params.getOrDefault("speed", "1"));
+            } catch (NumberFormatException e) {
+                sendJson(exchange, 400, "{\"error\":\"invalid query parameters\"}");
+                return;
+            }
+            if (channels.length == 0) {
+                sendJson(exchange, 400, "{\"error\":\"channels required\"}");
+                return;
+            }
+            for (int ch : channels) {
+                if (ch < 0 || ch >= header.numSignals()) {
+                    sendJson(exchange, 400, "{\"error\":\"channel out of range\"}");
+                    return;
+                }
+            }
+            speed = Math.max(0.1, Math.min(speed, 200));
+            start = Math.max(0, Math.min(start, totalDurationSec));
+
+            double[] sfreqs = new double[channels.length];
+            long[] nextIndex = new long[channels.length];
+            for (int i = 0; i < channels.length; i++) {
+                double sfreq = header.signal(channels[i]).sfreq();
+                sfreqs[i] = sfreq;
+                nextIndex[i] = Math.round(start * sfreq);
+            }
+
+            exchange.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.getResponseHeaders().add("Cache-Control", "no-cache");
+            exchange.sendResponseHeaders(200, 0);
+
+            double position = start;
+            try (OutputStream os = exchange.getResponseBody()) {
+                while (position < totalDurationSec) {
+                    double nextPosition = Math.min(position + TICK_MS / 1000.0 * speed, totalDurationSec);
+
+                    StringBuilder json = new StringBuilder();
+                    json.append("{\"channels\":{");
+                    for (int i = 0; i < channels.length; i++) {
+                        if (i > 0) json.append(",");
+                        long endIndex = Math.round(nextPosition * sfreqs[i]);
+                        long count = Math.max(0, endIndex - nextIndex[i]);
+                        double sampleStart = nextIndex[i] / sfreqs[i];
+                        double sampleDuration = count / sfreqs[i];
+                        double[] values = count > 0
+                                ? reader.readPhysicalSamples(channels[i], sampleStart, sampleDuration)
+                                : new double[0];
+                        nextIndex[i] = endIndex;
+
+                        json.append("\"").append(channels[i]).append("\":{");
+                        json.append("\"sfreq\":").append(Json.number(sfreqs[i])).append(",");
+                        json.append("\"start\":").append(Json.number(sampleStart)).append(",");
+                        json.append("\"values\":").append(Json.numberArray(values));
+                        json.append("}");
+                    }
+                    json.append("}}");
+
+                    os.write(("data: " + json + "\n\n").getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+
+                    position = nextPosition;
+                    try {
+                        Thread.sleep(TICK_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                os.write("event: end\ndata: {}\n\n".getBytes(StandardCharsets.UTF_8));
+                os.flush();
+            } catch (IOException e) {
+                // client disconnected; nothing more to do
+            }
         }
     }
 

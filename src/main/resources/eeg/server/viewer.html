@@ -23,10 +23,11 @@
   .chartRowLabel { width: 150px; flex: 0 0 150px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; text-align: right; }
   .chartRowLabel .name { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; }
   .chartRowLabel .unit { font-size: 11px; color: #888; }
-  .rangeInputs { display: flex; align-items: center; gap: 3px; margin-top: 3px; }
-  .rangeInputs input { width: 46px; padding: 2px 3px; font-size: 10px; border: 1px solid #ccc; border-radius: 4px; text-align: right; }
-  .rangeInputs span { font-size: 10px; color: #aaa; }
-  .rangeInputs button { padding: 1px 4px; font-size: 10px; border-radius: 4px; }
+  .rangeInputs, .filterInputs { display: flex; align-items: center; gap: 3px; margin-top: 3px; }
+  .rangeInputs input, .filterInputs input { width: 46px; padding: 2px 3px; font-size: 10px; border: 1px solid #ccc; border-radius: 4px; text-align: right; }
+  .rangeInputs span, .filterInputs span { font-size: 10px; color: #aaa; }
+  .rangeInputs button, .filterInputs button { padding: 1px 4px; font-size: 10px; border-radius: 4px; }
+  .rowTag { font-size: 10px; color: #999; width: 28px; text-align: left; flex: 0 0 auto; }
   .chartWrap { position: relative; height: 88px; flex: 1; min-width: 0; }
   .hint { font-size: 12px; color: #888; margin-top: 8px; }
   .empty { font-size: 13px; color: #888; padding: 24px 0; }
@@ -50,7 +51,7 @@
   <div class="row tabs" id="channelToggles"></div>
   <div class="row">
     <button id="playBtn">▶ 재생</button>
-    <button id="filterBtn">필터 (0.5–40Hz)</button>
+    <button id="filterBtn">필터</button>
     <div class="tabs" id="speedTabs"></div>
     <div class="tabs" id="windowTabs"></div>
     <input type="range" id="startRange" min="0" max="0" step="1" value="0" />
@@ -81,9 +82,14 @@ let currentStart = 0;
 let charts = [];
 let chartByChannel = {};
 let customRanges = {};
+let customFilters = {};
 
 function getRange(chIdx, signal) {
   return customRanges[chIdx] || { min: signal.displayMin, max: signal.displayMax };
+}
+
+function getFilterCutoff(chIdx, signal) {
+  return customFilters[chIdx] || { lowHz: signal.filterLowHz, highHz: signal.filterHighHz };
 }
 
 function round2(v) {
@@ -267,7 +273,10 @@ function decimate(sfreq, startOffsetSec, values) {
 }
 
 async function fetchSamples(channelIndex, start, duration) {
-  const res = await fetch(`/api/samples?channel=${channelIndex}&start=${start}&duration=${duration}&filtered=${filterEnabled}&file=${encodeURIComponent(currentFile)}`);
+  const signal = header.signals[channelIndex];
+  const cutoff = getFilterCutoff(channelIndex, signal);
+  const res = await fetch(`/api/samples?channel=${channelIndex}&start=${start}&duration=${duration}&filtered=${filterEnabled}` +
+    `&lowHz=${cutoff.lowHz}&highHz=${cutoff.highHz}&file=${encodeURIComponent(currentFile)}`);
   return res.json();
 }
 
@@ -333,6 +342,10 @@ async function renderCharts() {
     const range = getRange(chIdx, signal);
     const rangeRow = document.createElement('div');
     rangeRow.className = 'rangeInputs';
+    const rangeTag = document.createElement('span');
+    rangeTag.className = 'rowTag';
+    rangeTag.textContent = '범위';
+    rangeRow.appendChild(rangeTag);
     const minInput = document.createElement('input');
     minInput.type = 'number';
     minInput.value = round2(range.min);
@@ -372,6 +385,58 @@ async function renderCharts() {
     rangeRow.appendChild(maxInput);
     rangeRow.appendChild(resetBtn);
     label.appendChild(rangeRow);
+
+    const cutoff = getFilterCutoff(chIdx, signal);
+    const filterRow = document.createElement('div');
+    filterRow.className = 'filterInputs';
+    const filterTag = document.createElement('span');
+    filterTag.className = 'rowTag';
+    filterTag.textContent = '필터';
+    const lowInput = document.createElement('input');
+    lowInput.type = 'number';
+    lowInput.step = '0.1';
+    lowInput.value = round2(cutoff.lowHz);
+    const fsep = document.createElement('span');
+    fsep.textContent = '~';
+    const highInput = document.createElement('input');
+    highInput.type = 'number';
+    highInput.step = '0.1';
+    highInput.value = round2(cutoff.highHz);
+    const filterResetBtn = document.createElement('button');
+    filterResetBtn.textContent = '↺';
+    filterResetBtn.title = '기본 컷오프로 되돌리기';
+
+    function applyFilterCutoff() {
+      const lowHz = parseFloat(lowInput.value);
+      const highHz = parseFloat(highInput.value);
+      if (isNaN(lowHz) || isNaN(highHz) || lowHz <= 0 || lowHz >= highHz) return;
+      customFilters[chIdx] = { lowHz, highHz };
+      if (isPlaying) {
+        openStream(Array.from(activeChannels).sort((a, b) => a - b), playheadTime);
+      } else {
+        renderCharts();
+      }
+    }
+    lowInput.addEventListener('change', applyFilterCutoff);
+    highInput.addEventListener('change', applyFilterCutoff);
+    filterResetBtn.addEventListener('click', () => {
+      delete customFilters[chIdx];
+      lowInput.value = round2(signal.filterLowHz);
+      highInput.value = round2(signal.filterHighHz);
+      if (isPlaying) {
+        openStream(Array.from(activeChannels).sort((a, b) => a - b), playheadTime);
+      } else {
+        renderCharts();
+      }
+    });
+
+    filterRow.appendChild(filterTag);
+    filterRow.appendChild(lowInput);
+    filterRow.appendChild(fsep);
+    filterRow.appendChild(highInput);
+    filterRow.appendChild(filterResetBtn);
+    label.appendChild(filterRow);
+
     rowEl.appendChild(label);
 
     const wrap = document.createElement('div');
@@ -451,6 +516,7 @@ function attachDragToPan() {
 
   chartsEl.addEventListener('pointerdown', (e) => {
     if (charts.length === 0) return;
+    if (e.target.closest('.chartRowLabel')) return;
     stopPlayback();
     isDragging = true;
     dragPointerId = e.pointerId;
@@ -537,7 +603,10 @@ function openStream(channels, streamStart) {
   if (eventSource) {
     eventSource.close();
   }
-  const url = `/api/stream?channels=${channels.join(',')}&start=${streamStart}&speed=${currentSpeed}&filtered=${filterEnabled}&file=${encodeURIComponent(currentFile)}`;
+  const lowHzList = channels.map(ch => getFilterCutoff(ch, header.signals[ch]).lowHz).join(',');
+  const highHzList = channels.map(ch => getFilterCutoff(ch, header.signals[ch]).highHz).join(',');
+  const url = `/api/stream?channels=${channels.join(',')}&start=${streamStart}&speed=${currentSpeed}&filtered=${filterEnabled}` +
+    `&lowHz=${lowHzList}&highHz=${highHzList}&file=${encodeURIComponent(currentFile)}`;
   eventSource = new EventSource(url);
   eventSource.onmessage = (evt) => {
     handleStreamChunk(JSON.parse(evt.data));
@@ -663,6 +732,7 @@ async function loadFile(filename) {
   chartByChannel = {};
   liveBuffers = {};
   customRanges = {};
+  customFilters = {};
 
   annotations = null;
   renderMinimap();

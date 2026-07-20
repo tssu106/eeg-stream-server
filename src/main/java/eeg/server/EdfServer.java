@@ -36,8 +36,7 @@ public class EdfServer {
     private static final Pattern AGE_PATTERN = Pattern.compile("(\\d{1,3})\\s*[Yy][Rr]");
 
     private static final int FILTER_ORDER = 4;
-    private static final double FILTER_LOW_HZ = 0.5;
-    private static final double FILTER_HIGH_HZ = 40.0;
+    private static final double MIN_LOW_HZ = 0.05;
     private static final double MIN_SFREQ_FOR_FILTER = 4.0;
     private static final double WARMUP_SEC = 5.0;
 
@@ -45,8 +44,48 @@ public class EdfServer {
         return sfreq >= MIN_SFREQ_FOR_FILTER;
     }
 
-    private static double effectiveHighHz(double sfreq) {
-        return Math.min(FILTER_HIGH_HZ, sfreq * 0.45);
+    private static double effectiveHighHz(double sfreq, double requestedHighHz) {
+        return Math.min(requestedHighHz, sfreq * 0.45);
+    }
+
+    /**
+     * Default bandpass cutoffs per channel category. EEG/EOG/EMG/ECG/Resp channels carry
+     * clinically meaningful signal in very different frequency ranges, so a single global
+     * cutoff is either too tight for some or too loose for others.
+     */
+    private static double[] defaultCutoffHz(String category) {
+        return switch (category) {
+            case "EOG" -> new double[]{0.5, 15.0};
+            case "EMG" -> new double[]{10.0, 100.0};
+            case "ECG" -> new double[]{0.5, 70.0};
+            case "Resp" -> new double[]{0.1, 15.0};
+            default -> new double[]{0.5, 40.0};
+        };
+    }
+
+    private static double parseOptionalDouble(String value, double fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        try {
+            return Double.parseDouble(value);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    /** Parses a comma-separated list of optional overrides, falling back per-position when blank/invalid. */
+    private static double[] parseOptionalDoubleList(String csv, int expectedLen, double[] fallback) {
+        double[] result = fallback.clone();
+        if (csv == null || csv.isBlank()) return result;
+        String[] parts = csv.split(",");
+        for (int i = 0; i < Math.min(parts.length, expectedLen); i++) {
+            if (!parts[i].isBlank()) {
+                try {
+                    result[i] = Double.parseDouble(parts[i]);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return result;
     }
 
     private static final int DISPLAY_RANGE_SAMPLE_WINDOWS = 8;
@@ -206,11 +245,12 @@ public class EdfServer {
     }
 
     private static double[] readFilteredSamples(EdfReader reader, int channel, double sfreq,
-                                                 double start, double duration) throws IOException {
+                                                 double start, double duration,
+                                                 double lowHz, double highHz) throws IOException {
         double warmup = Math.min(WARMUP_SEC, start);
         double[] raw = reader.readPhysicalSamples(channel, start - warmup, duration + warmup);
 
-        ButterworthFilter filter = ButterworthFilter.designBandpass(FILTER_ORDER, FILTER_LOW_HZ, effectiveHighHz(sfreq), sfreq);
+        ButterworthFilter filter = ButterworthFilter.designBandpass(FILTER_ORDER, lowHz, highHz, sfreq);
         double[] filteredAll = filter.apply(raw, filter.newState());
 
         int targetCount = (int) Math.round(duration * sfreq);
@@ -289,6 +329,7 @@ public class EdfServer {
                 double[] displayRange = "SpO2".equals(meta.category())
                         ? new double[]{70.0, 100.0}
                         : computeDisplayRange(reader, s, totalDurationSec);
+                double[] filterDefault = defaultCutoffHz(meta.category());
                 json.append("{");
                 json.append("\"index\":").append(s.index()).append(",");
                 json.append("\"label\":").append(Json.quote(s.label())).append(",");
@@ -298,6 +339,8 @@ public class EdfServer {
                 json.append("\"physMax\":").append(Json.number(s.physMax())).append(",");
                 json.append("\"displayMin\":").append(Json.number(displayRange[0])).append(",");
                 json.append("\"displayMax\":").append(Json.number(displayRange[1])).append(",");
+                json.append("\"filterLowHz\":").append(Json.number(filterDefault[0])).append(",");
+                json.append("\"filterHighHz\":").append(Json.number(filterDefault[1])).append(",");
                 json.append("\"category\":").append(Json.quote(meta.category())).append(",");
                 json.append("\"koreanLabel\":").append(meta.korean() == null ? "null" : Json.quote(meta.korean()));
                 json.append("}");
@@ -337,10 +380,15 @@ public class EdfServer {
             duration = Math.max(0, Math.min(duration, totalDurationSec - start));
 
             EdfSignalHeader signal = header.signal(channel);
+            SignalMeta meta = classify(signal.label());
+            double[] defaultCutoff = defaultCutoffHz(meta.category());
+            double lowHz = Math.max(MIN_LOW_HZ, parseOptionalDouble(params.get("lowHz"), defaultCutoff[0]));
+            double highHz = effectiveHighHz(signal.sfreq(), parseOptionalDouble(params.get("highHz"), defaultCutoff[1]));
+
             boolean wantFiltered = "true".equalsIgnoreCase(params.get("filtered"));
-            boolean filterApplied = wantFiltered && canFilter(signal.sfreq());
+            boolean filterApplied = wantFiltered && canFilter(signal.sfreq()) && lowHz < highHz;
             double[] values = filterApplied
-                    ? readFilteredSamples(reader, channel, signal.sfreq(), start, duration)
+                    ? readFilteredSamples(reader, channel, signal.sfreq(), start, duration, lowHz, highHz)
                     : reader.readPhysicalSamples(channel, start, duration);
 
             StringBuilder json = new StringBuilder();
@@ -349,6 +397,8 @@ public class EdfServer {
             json.append("\"sfreq\":").append(Json.number(signal.sfreq())).append(",");
             json.append("\"start\":").append(Json.number(start)).append(",");
             json.append("\"filtered\":").append(filterApplied).append(",");
+            json.append("\"lowHz\":").append(Json.number(lowHz)).append(",");
+            json.append("\"highHz\":").append(Json.number(highHz)).append(",");
             json.append("\"values\":").append(Json.numberArray(values));
             json.append("}");
 
@@ -427,6 +477,17 @@ public class EdfServer {
             speed = Math.max(0.1, Math.min(speed, 200));
             start = Math.max(0, Math.min(start, totalDurationSec));
 
+            double[] categoryLow = new double[channels.length];
+            double[] categoryHigh = new double[channels.length];
+            for (int i = 0; i < channels.length; i++) {
+                SignalMeta meta = classify(header.signal(channels[i]).label());
+                double[] d = defaultCutoffHz(meta.category());
+                categoryLow[i] = d[0];
+                categoryHigh[i] = d[1];
+            }
+            double[] lowHzList = parseOptionalDoubleList(params.get("lowHz"), channels.length, categoryLow);
+            double[] highHzList = parseOptionalDoubleList(params.get("highHz"), channels.length, categoryHigh);
+
             double[] sfreqs = new double[channels.length];
             long[] nextIndex = new long[channels.length];
             ButterworthFilter[] filters = new ButterworthFilter[channels.length];
@@ -437,9 +498,11 @@ public class EdfServer {
                 sfreqs[i] = sfreq;
                 nextIndex[i] = Math.round(start * sfreq);
 
-                filterApplied[i] = wantFiltered && canFilter(sfreq);
+                double lowHz = Math.max(MIN_LOW_HZ, lowHzList[i]);
+                double highHz = effectiveHighHz(sfreq, highHzList[i]);
+                filterApplied[i] = wantFiltered && canFilter(sfreq) && lowHz < highHz;
                 if (filterApplied[i]) {
-                    ButterworthFilter filter = ButterworthFilter.designBandpass(FILTER_ORDER, FILTER_LOW_HZ, effectiveHighHz(sfreq), sfreq);
+                    ButterworthFilter filter = ButterworthFilter.designBandpass(FILTER_ORDER, lowHz, highHz, sfreq);
                     double[] state = filter.newState();
                     double warmup = Math.min(WARMUP_SEC, start);
                     if (warmup > 0) {

@@ -28,6 +28,10 @@ public class EdfReader implements AutoCloseable {
     private EdfHeader readHeader() throws IOException {
         ByteBuffer fixed = readBytes(0, 256);
 
+        String patientId = parseAscii(fixed, 8, 80);
+        String recordingId = parseAscii(fixed, 88, 80);
+        String startDate = parseAscii(fixed, 168, 8);
+        String startTime = parseAscii(fixed, 176, 8);
         int headerBytes = parseInt(fixed, 184, 8);
         int numRecords = parseInt(fixed, 236, 8);
         double recordDuration = parseDouble(fixed, 244, 8);
@@ -68,7 +72,7 @@ public class EdfReader implements AutoCloseable {
             ));
         }
 
-        return new EdfHeader(numRecords, recordDuration, numSignals, headerBytes, signals);
+        return new EdfHeader(patientId, recordingId, startDate, startTime, numRecords, recordDuration, numSignals, headerBytes, signals);
     }
 
     public int[] readDigitalSamples(int channelIndex, double startSec, double durationSec) throws IOException {

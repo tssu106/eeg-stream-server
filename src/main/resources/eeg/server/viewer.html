@@ -8,36 +8,56 @@
   body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 24px; color: #1a1a1a; }
   h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
   .sub { font-size: 13px; color: #666; margin-bottom: 16px; }
-  button { border: 1px solid #ccc; background: #fff; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  button, select { border: 1px solid #ccc; background: #fff; border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   button:hover { background: #f5f5f5; }
+  select#fileSelect { min-width: 260px; }
   button.active { background: #1a5fb4; color: #fff; border-color: #1a5fb4; }
   button .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  button .krLabel { font-size: 11px; color: #888; margin-left: 5px; }
+  button.active .krLabel { color: #dbe8ff; }
   .row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
   .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
   input[type=range] { flex: 1; min-width: 200px; }
   .readout { font-size: 13px; font-weight: 500; min-width: 220px; text-align: right; color: #444; }
   .chartRow { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-  .chartRowLabel { width: 130px; flex: 0 0 130px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; text-align: right; }
+  .chartRowLabel { width: 150px; flex: 0 0 150px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; text-align: right; }
   .chartRowLabel .name { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #333; }
   .chartRowLabel .unit { font-size: 11px; color: #888; }
+  .rangeInputs { display: flex; align-items: center; gap: 3px; margin-top: 3px; }
+  .rangeInputs input { width: 46px; padding: 2px 3px; font-size: 10px; border: 1px solid #ccc; border-radius: 4px; text-align: right; }
+  .rangeInputs span { font-size: 10px; color: #aaa; }
+  .rangeInputs button { padding: 1px 4px; font-size: 10px; border-radius: 4px; }
   .chartWrap { position: relative; height: 88px; flex: 1; min-width: 0; }
   .hint { font-size: 12px; color: #888; margin-top: 8px; }
   .empty { font-size: 13px; color: #888; padding: 24px 0; }
+  .minimap { position: relative; height: 28px; background: #eee; border-radius: 4px; margin-bottom: 8px; cursor: pointer; overflow: hidden; }
+  .minimap .seg { position: absolute; top: 0; bottom: 0; }
+  .minimap .desat { position: absolute; top: 0; width: 3px; height: 100%; background: #d32f2f; }
+  .minimap .viewport { position: absolute; top: 0; bottom: 0; border: 2px solid #1a5fb4; background: rgba(26,95,180,0.15); pointer-events: none; box-sizing: border-box; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #666; margin-bottom: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 </style>
 </head>
 <body>
   <h1>EDF Channel Viewer</h1>
+  <div class="row">
+    <select id="fileSelect"></select>
+  </div>
   <div class="sub" id="fileInfo">불러오는 중...</div>
+  <div id="minimap" class="minimap"></div>
+  <div id="minimapLegend" class="legend"></div>
   <div class="row tabs" id="channelToggles"></div>
   <div class="row">
     <button id="playBtn">▶ 재생</button>
+    <button id="filterBtn">필터 (0.5–40Hz)</button>
     <div class="tabs" id="speedTabs"></div>
     <div class="tabs" id="windowTabs"></div>
     <input type="range" id="startRange" min="0" max="0" step="1" value="0" />
     <span class="readout" id="rangeOut"></span>
   </div>
   <div id="charts"></div>
-  <div class="hint">← → 방향키로 현재 구간 길이만큼 앞뒤로 이동 · 재생 중에는 다른 조작 시 자동 정지</div>
+  <div class="hint">← → 방향키로 현재 구간 길이만큼 앞뒤로 이동 · 그래프를 마우스로 드래그해서 좌우 이동 · 재생 중에는 다른 조작 시 자동 정지</div>
 
 <script>
 const WINDOWS = [
@@ -48,19 +68,33 @@ const WINDOWS = [
 const FOREST = ['#2a78d6', '#008300', '#e87ba4', '#eda100', '#1baf7a', '#eb6834', '#4a3aa7'];
 const SPEEDS = [1, 2, 5, 10, 30, 60];
 const MAX_POINTS = 2000;
+const STAGE_COLORS = { W: '#ddd', S1: '#b3d9ff', S2: '#6ab0f5', S3: '#2f6fb5', S4: '#1a4a80', REM: '#f5a742', MT: '#bbb' };
+const STAGE_NAMES = { W: '깸', S1: '얕은잠1', S2: '얕은잠2', S3: '깊은잠1', S4: '깊은잠2', REM: 'REM', MT: '움직임' };
 
 let header = null;
+let annotations = null;
+let currentFile = null;
 let activeChannels = new Set();
 let currentWindow = WINDOWS[0].sec;
 let currentSpeed = SPEEDS[0];
 let currentStart = 0;
 let charts = [];
 let chartByChannel = {};
+let customRanges = {};
+
+function getRange(chIdx, signal) {
+  return customRanges[chIdx] || { min: signal.displayMin, max: signal.displayMax };
+}
+
+function round2(v) {
+  return Math.round(v * 100) / 100;
+}
 
 let isPlaying = false;
 let eventSource = null;
 let liveBuffers = {};
 let playheadTime = 0;
+let filterEnabled = true;
 
 function formatClock(totalSec) {
   const h = Math.floor(totalSec / 3600);
@@ -91,6 +125,12 @@ function renderChannelToggles() {
     dot.style.background = FOREST[s.index % FOREST.length];
     btn.appendChild(dot);
     btn.appendChild(document.createTextNode(s.label));
+    if (s.koreanLabel) {
+      const kr = document.createElement('span');
+      kr.className = 'krLabel';
+      kr.textContent = s.koreanLabel;
+      btn.appendChild(kr);
+    }
     if (activeChannels.has(s.index)) btn.classList.add('active');
     btn.addEventListener('click', () => {
       stopPlayback();
@@ -139,6 +179,82 @@ function syncSlider() {
   range.value = currentStart;
   document.getElementById('rangeOut').textContent =
     formatClock(currentStart) + ' – ' + formatClock(currentStart + currentWindow) + ' (총 ' + formatClock(header.totalDurationSec) + ')';
+  updateMinimapViewport();
+}
+
+async function fetchAnnotations(filename) {
+  const res = await fetch('/api/annotations?file=' + encodeURIComponent(filename));
+  return res.json();
+}
+
+function renderMinimap() {
+  const el = document.getElementById('minimap');
+  const legendEl = document.getElementById('minimapLegend');
+  el.innerHTML = '';
+  legendEl.innerHTML = '';
+  if (!header) return;
+  const total = header.totalDurationSec;
+
+  const usedStages = new Set();
+  (annotations?.sleepStages || []).forEach(s => {
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.style.left = (s.start / total * 100) + '%';
+    seg.style.width = (s.duration / total * 100) + '%';
+    seg.style.background = STAGE_COLORS[s.stage] || '#ccc';
+    seg.title = (STAGE_NAMES[s.stage] || s.stage) + ' · ' + formatClock(s.start);
+    el.appendChild(seg);
+    usedStages.add(s.stage);
+  });
+
+  (annotations?.desaturations || []).forEach(d => {
+    const tick = document.createElement('div');
+    tick.className = 'desat';
+    tick.style.left = (d.start / total * 100) + '%';
+    tick.title = '산소포화도 저하 ' + d.minValue.toFixed(0) + '% · ' + formatClock(d.start) + '~' + formatClock(d.end);
+    el.appendChild(tick);
+  });
+
+  const vp = document.createElement('div');
+  vp.className = 'viewport';
+  vp.id = 'minimapViewport';
+  el.appendChild(vp);
+  updateMinimapViewport();
+
+  el.onclick = (e) => {
+    const rect = el.getBoundingClientRect();
+    const frac = (e.clientX - rect.left) / rect.width;
+    stopPlayback();
+    currentStart = Math.max(0, Math.min(frac * total, maxStart()));
+    syncSlider();
+    renderCharts();
+  };
+
+  Object.keys(STAGE_NAMES).forEach(stage => {
+    if (!usedStages.has(stage)) return;
+    const item = document.createElement('span');
+    const dot = document.createElement('i');
+    dot.style.background = STAGE_COLORS[stage];
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(STAGE_NAMES[stage]));
+    legendEl.appendChild(item);
+  });
+  if ((annotations?.desaturations || []).length) {
+    const item = document.createElement('span');
+    const dot = document.createElement('i');
+    dot.style.background = '#d32f2f';
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode('산소포화도 저하 의심'));
+    legendEl.appendChild(item);
+  }
+}
+
+function updateMinimapViewport() {
+  const vp = document.getElementById('minimapViewport');
+  if (!vp || !header) return;
+  const total = header.totalDurationSec;
+  vp.style.left = (currentStart / total * 100) + '%';
+  vp.style.width = (Math.max(currentWindow, total * 0.005) / total * 100) + '%';
 }
 
 function decimate(sfreq, startOffsetSec, values) {
@@ -151,7 +267,7 @@ function decimate(sfreq, startOffsetSec, values) {
 }
 
 async function fetchSamples(channelIndex, start, duration) {
-  const res = await fetch(`/api/samples?channel=${channelIndex}&start=${start}&duration=${duration}`);
+  const res = await fetch(`/api/samples?channel=${channelIndex}&start=${start}&duration=${duration}&filtered=${filterEnabled}&file=${encodeURIComponent(currentFile)}`);
   return res.json();
 }
 
@@ -163,12 +279,15 @@ async function renderCharts() {
   const channels = Array.from(activeChannels).sort((a, b) => a - b);
   const myGeneration = ++renderGeneration;
   const chartsEl = document.getElementById('charts');
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
 
   if (channels.length === 0) {
     charts.forEach(c => c.destroy());
     charts = [];
     chartByChannel = {};
     chartsEl.innerHTML = '<div class="empty">표시할 채널을 위 목록에서 선택하세요</div>';
+    window.scrollTo(scrollX, scrollY);
     return;
   }
 
@@ -204,12 +323,55 @@ async function renderCharts() {
     nameLine.appendChild(dot);
     nameLine.appendChild(document.createTextNode(signal.label));
     label.appendChild(nameLine);
-    if (signal.unit) {
+    if (signal.koreanLabel || signal.unit) {
       const unitLine = document.createElement('div');
       unitLine.className = 'unit';
-      unitLine.textContent = signal.unit;
+      unitLine.textContent = [signal.koreanLabel, signal.unit].filter(Boolean).join(' · ');
       label.appendChild(unitLine);
     }
+
+    const range = getRange(chIdx, signal);
+    const rangeRow = document.createElement('div');
+    rangeRow.className = 'rangeInputs';
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.value = round2(range.min);
+    const sep = document.createElement('span');
+    sep.textContent = '~';
+    const maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.value = round2(range.max);
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '↺';
+    resetBtn.title = '자동 범위로 되돌리기';
+
+    function applyRange() {
+      const min = parseFloat(minInput.value);
+      const max = parseFloat(maxInput.value);
+      if (isNaN(min) || isNaN(max) || min >= max) return;
+      customRanges[chIdx] = { min, max };
+      const chart = chartByChannel[chIdx];
+      chart.options.scales.y.min = min;
+      chart.options.scales.y.max = max;
+      chart.update('none');
+    }
+    minInput.addEventListener('change', applyRange);
+    maxInput.addEventListener('change', applyRange);
+    resetBtn.addEventListener('click', () => {
+      delete customRanges[chIdx];
+      minInput.value = round2(signal.displayMin);
+      maxInput.value = round2(signal.displayMax);
+      const chart = chartByChannel[chIdx];
+      chart.options.scales.y.min = signal.displayMin;
+      chart.options.scales.y.max = signal.displayMax;
+      chart.update('none');
+    });
+
+    rangeRow.appendChild(minInput);
+    rangeRow.appendChild(sep);
+    rangeRow.appendChild(maxInput);
+    rangeRow.appendChild(resetBtn);
+    label.appendChild(rangeRow);
     rowEl.appendChild(label);
 
     const wrap = document.createElement('div');
@@ -232,9 +394,19 @@ async function renderCharts() {
         animation: false,
         parsing: false,
         normalized: true,
+        interaction: { mode: 'index', intersect: false, axis: 'x' },
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: (ctx) => signal.label + ': ' + ctx.parsed.y.toFixed(2) + (signal.unit ? ' ' + signal.unit : '') } }
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              title: (items) => items.length
+                ? formatClock(items[0].parsed.x) + ' (' + items[0].parsed.x.toFixed(2) + 's)'
+                : '',
+              label: (ctx) => signal.label + ': ' + ctx.parsed.y.toFixed(2) + (signal.unit ? ' ' + signal.unit : '')
+            }
+          }
         },
         scales: {
           x: {
@@ -244,7 +416,7 @@ async function renderCharts() {
             title: isLast ? { display: true, text: '시간 (초)' } : undefined
           },
           y: {
-            min: signal.physMin, max: signal.physMax,
+            min: range.min, max: range.max,
             ticks: { maxTicksLimit: 4 },
             afterFit: (scale) => { scale.width = 46; }
           }
@@ -254,6 +426,9 @@ async function renderCharts() {
     charts.push(chart);
     chartByChannel[chIdx] = chart;
   });
+
+  window.scrollTo(scrollX, scrollY);
+  requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
 }
 
 function moveWindow(direction) {
@@ -262,6 +437,63 @@ function moveWindow(direction) {
   syncSlider();
   renderCharts();
 }
+
+let isDragging = false;
+let dragPointerId = null;
+let dragStartX = 0;
+let dragStartTime = 0;
+let dragFramePending = false;
+
+function attachDragToPan() {
+  const chartsEl = document.getElementById('charts');
+  chartsEl.style.cursor = 'grab';
+  chartsEl.style.touchAction = 'none';
+
+  chartsEl.addEventListener('pointerdown', (e) => {
+    if (charts.length === 0) return;
+    stopPlayback();
+    isDragging = true;
+    dragPointerId = e.pointerId;
+    dragStartX = e.clientX;
+    dragStartTime = currentStart;
+    chartsEl.style.cursor = 'grabbing';
+    chartsEl.style.userSelect = 'none';
+    chartsEl.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  chartsEl.addEventListener('pointermove', (e) => {
+    if (!isDragging || e.pointerId !== dragPointerId) return;
+    const chartArea = charts[0] && charts[0].chartArea;
+    const plotWidth = chartArea ? (chartArea.right - chartArea.left) : chartsEl.clientWidth;
+    const secondsPerPixel = currentWindow / plotWidth;
+    const deltaPixels = dragStartX - e.clientX;
+    const newStart = Math.max(0, Math.min(dragStartTime + deltaPixels * secondsPerPixel, maxStart()));
+    if (newStart === currentStart) return;
+    currentStart = newStart;
+    syncSlider();
+    if (!dragFramePending) {
+      dragFramePending = true;
+      requestAnimationFrame(() => {
+        dragFramePending = false;
+        if (isDragging) renderCharts();
+      });
+    }
+  });
+
+  const endDrag = (e) => {
+    if (!isDragging || (dragPointerId !== null && e.pointerId !== dragPointerId)) return;
+    isDragging = false;
+    dragPointerId = null;
+    chartsEl.style.cursor = 'grab';
+    chartsEl.style.userSelect = '';
+    renderCharts();
+  };
+  chartsEl.addEventListener('pointerup', endDrag);
+  chartsEl.addEventListener('pointercancel', endDrag);
+}
+
+attachDragToPan();
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight') { e.preventDefault(); moveWindow(1); }
@@ -305,7 +537,7 @@ function openStream(channels, streamStart) {
   if (eventSource) {
     eventSource.close();
   }
-  const url = `/api/stream?channels=${channels.join(',')}&start=${streamStart}&speed=${currentSpeed}`;
+  const url = `/api/stream?channels=${channels.join(',')}&start=${streamStart}&speed=${currentSpeed}&filtered=${filterEnabled}&file=${encodeURIComponent(currentFile)}`;
   eventSource = new EventSource(url);
   eventSource.onmessage = (evt) => {
     handleStreamChunk(JSON.parse(evt.data));
@@ -375,19 +607,79 @@ document.getElementById('playBtn').addEventListener('click', () => {
   }
 });
 
-async function init() {
-  const res = await fetch('/api/header');
+document.getElementById('filterBtn').addEventListener('click', () => {
+  stopPlayback();
+  filterEnabled = !filterEnabled;
+  document.getElementById('filterBtn').classList.toggle('active', filterEnabled);
+  renderCharts();
+});
+
+function describeFile(f) {
+  const parts = [];
+  if (f.sex || f.age) {
+    const sexLabel = f.sex === 'F' ? '여성' : f.sex === 'M' ? '남성' : null;
+    parts.push([sexLabel, f.age ? f.age + '세' : null].filter(Boolean).join(', '));
+  }
+  if (f.recordingDate) parts.push(f.recordingDate);
+  return parts.join(' · ');
+}
+
+async function renderFileSelect() {
+  const res = await fetch('/api/files');
+  const files = await res.json();
+
+  const sel = document.getElementById('fileSelect');
+  sel.innerHTML = '';
+  files.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f.name;
+    const desc = describeFile(f);
+    opt.textContent = f.name + (desc ? '  —  ' + desc : '');
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => loadFile(sel.value));
+
+  return files;
+}
+
+async function loadFile(filename) {
+  stopPlayback();
+  currentFile = filename;
+
+  const res = await fetch('/api/header?file=' + encodeURIComponent(filename));
   header = await res.json();
+
+  const desc = describeFile(header);
   document.getElementById('fileInfo').textContent =
-    header.signals.length + '개 채널, 총 길이 ' + formatClock(header.totalDurationSec) + ' (' + header.numRecords + '개 레코드 × ' + header.recordDuration + '초)';
+    header.signals.length + '개 채널, 총 길이 ' + formatClock(header.totalDurationSec) +
+    ' (' + header.numRecords + '개 레코드 × ' + header.recordDuration + '초)' +
+    (desc ? ' · ' + desc : '');
 
-  header.signals.forEach(s => activeChannels.add(s.index));
+  const eegChannels = header.signals.filter(s => s.category === 'EEG');
+  activeChannels = new Set((eegChannels.length ? eegChannels : header.signals).map(s => s.index));
+  currentStart = 0;
+  charts.forEach(c => c.destroy());
+  charts = [];
+  chartByChannel = {};
+  liveBuffers = {};
+  customRanges = {};
 
+  annotations = null;
+  renderMinimap();
   syncSlider();
   renderChannelToggles();
+  await renderCharts();
+
+  annotations = await fetchAnnotations(filename);
+  renderMinimap();
+}
+
+async function init() {
+  document.getElementById('filterBtn').classList.toggle('active', filterEnabled);
+  const files = await renderFileSelect();
   renderWindowTabs();
   renderSpeedTabs();
-  await renderCharts();
+  await loadFile(files[0].name);
 }
 
 init();

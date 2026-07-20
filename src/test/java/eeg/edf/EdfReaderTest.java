@@ -3,6 +3,8 @@ package eeg.edf;
 import com.google.gson.Gson;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -53,34 +55,36 @@ class EdfReaderTest {
         }
     }
 
-    @Test
-    void digitalSamplesMatchExpected() throws IOException {
-        int[] expected = loadIntCsv("/expected_ch0_first10s_digital.csv");
+    @ParameterizedTest(name = "channel {0} digital samples match MNE ground truth")
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6})
+    void digitalSamplesMatchExpected(int channel) throws IOException {
+        int[] expected = loadIntCsv("/expected_ch" + channel + "_digital.csv");
 
         try (EdfReader reader = new EdfReader(EDF_PATH)) {
-            EdfSignalHeader channel0 = reader.header().signal(0);
-            double durationSec = expected.length / channel0.sfreq();
-            int[] actual = reader.readDigitalSamples(0, 0.0, durationSec);
+            EdfSignalHeader signal = reader.header().signal(channel);
+            double durationSec = expected.length / signal.sfreq();
+            int[] actual = reader.readDigitalSamples(channel, 0.0, durationSec);
 
             assertEquals(expected.length, actual.length);
             for (int i = 0; i < expected.length; i++) {
-                assertEquals(expected[i], actual[i], "sample mismatch at index " + i);
+                assertEquals(expected[i], actual[i], "channel " + channel + " sample mismatch at index " + i);
             }
         }
     }
 
-    @Test
-    void physicalSamplesMatchExpected() throws IOException {
-        double[] expected = loadDoubleCsv("/expected_ch0_first10s_uv.csv");
+    @ParameterizedTest(name = "channel {0} physical samples match MNE ground truth")
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6})
+    void physicalSamplesMatchExpected(int channel) throws IOException {
+        double[] expected = loadDoubleCsv("/expected_ch" + channel + "_physical.csv");
 
         try (EdfReader reader = new EdfReader(EDF_PATH)) {
-            EdfSignalHeader channel0 = reader.header().signal(0);
-            double durationSec = expected.length / channel0.sfreq();
-            double[] actual = reader.readPhysicalSamples(0, 0.0, durationSec);
+            EdfSignalHeader signal = reader.header().signal(channel);
+            double durationSec = expected.length / signal.sfreq();
+            double[] actual = reader.readPhysicalSamples(channel, 0.0, durationSec);
 
             assertEquals(expected.length, actual.length);
             for (int i = 0; i < expected.length; i++) {
-                assertEquals(expected[i], actual[i], DELTA, "sample mismatch at index " + i);
+                assertEquals(expected[i], actual[i], DELTA, "channel " + channel + " sample mismatch at index " + i);
             }
         }
     }
